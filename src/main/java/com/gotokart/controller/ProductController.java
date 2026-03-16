@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.gotokart.model.Product;
-import com.gotokart.services.ProductService;
+import com.gotokart.service.ProductService;
 
 @RestController
 @RequestMapping("/api/products")

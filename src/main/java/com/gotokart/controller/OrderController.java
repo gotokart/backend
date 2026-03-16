@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.gotokart.model.Order;
-import com.gotokart.services.OrderService;
+import com.gotokart.service.OrderService;
 
 @RestController
 @RequestMapping("/api/orders")

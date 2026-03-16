@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.gotokart.model.User;
-import com.gotokart.services.UserService;
+import com.gotokart.service.UserService;
 
 @RestController
 @RequestMapping("/api/users")

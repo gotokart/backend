@@ -1,4 +1,4 @@
-package com.gotokart.services;
+package com.gotokart.service;
 
 import java.util.List;
 
