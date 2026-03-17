@@ -1,23 +1,19 @@
 package com.gotokart.controller;
 
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
 import com.gotokart.model.User;
 import com.gotokart.service.UserService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/api/users")
+@RequiredArgsConstructor
 public class UserController {
-
-    @Autowired
-    UserService service;
+    private final UserService userService;
 
     @PostMapping("/register")
-    public User register(@RequestBody User user){
-        return service.register(user);
-    }
+    public User register(@RequestBody User user) { return userService.register(user); }
+
+    @GetMapping("/{id}")
+    public User getUser(@PathVariable Long id) { return userService.getUserById(id); }
 }

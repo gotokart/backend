@@ -1,31 +1,31 @@
 package com.gotokart.controller;
 
-import java.util.List;
-
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
 import com.gotokart.model.Product;
 import com.gotokart.service.ProductService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.*;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/products")
+@RequiredArgsConstructor
 public class ProductController {
-
-    @Autowired
-    ProductService service;
+    private final ProductService productService;
 
     @GetMapping
-    public List<Product> getProducts(){
-        return service.getAllProducts();
-    }
+    public List<Product> getAll() { return productService.getAllProducts(); }
+
+    @GetMapping("/{id}")
+    public Product getById(@PathVariable Long id) { return productService.getProductById(id); }
 
     @PostMapping
-    public Product addProduct(@RequestBody Product product){
-        return service.addProduct(product);
+    public Product create(@RequestBody Product product) { return productService.saveProduct(product); }
+
+    @PutMapping("/{id}")
+    public Product update(@PathVariable Long id, @RequestBody Product product) {
+        return productService.updateProduct(id, product);
     }
+
+    @DeleteMapping("/{id}")
+    public void delete(@PathVariable Long id) { productService.deleteProduct(id); }
 }

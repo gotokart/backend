@@ -1,23 +1,20 @@
 package com.gotokart.controller;
 
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
 import com.gotokart.model.Order;
 import com.gotokart.service.OrderService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.*;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/orders")
+@RequiredArgsConstructor
 public class OrderController {
+    private final OrderService orderService;
 
-    @Autowired
-    OrderService service;
+    @PostMapping("/{userId}/place")
+    public Order placeOrder(@PathVariable Long userId) { return orderService.placeOrder(userId); }
 
-    @PostMapping
-    public Order createOrder(@RequestBody Order order){
-        return service.createOrder(order);
-    }
+    @GetMapping("/{userId}")
+    public List<Order> getOrders(@PathVariable Long userId) { return orderService.getOrders(userId); }
 }

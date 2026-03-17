@@ -1,23 +1,26 @@
 package com.gotokart.model;
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
+import lombok.Data;
+import java.time.LocalDateTime;
+import java.util.List;
 
+@Data
 @Entity
-@Table(name="orders")
+@Table(name = "orders")
 public class Order {
-
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private Long userId;
+    @ManyToOne
+    @JoinColumn(name = "user_id")
+    private User user;
 
-    private Long productId;
+    @OneToMany(cascade = CascadeType.ALL)
+    private List<CartItem> items;
 
-    private int quantity;
-
+    private Double totalAmount;
+    private String status;
+    private LocalDateTime createdAt;
 }
