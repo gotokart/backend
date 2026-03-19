@@ -8,6 +8,7 @@ import com.gotokart.repository.ProductRepository;
 import com.gotokart.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
 @Service
@@ -31,6 +32,7 @@ public class CartService {
         return cartItemRepository.save(item);
     }
 
+    @Transactional
     public void removeFromCart(Long userId, Long productId) {
         cartItemRepository.deleteByUserIdAndProductId(userId, productId);
     }
