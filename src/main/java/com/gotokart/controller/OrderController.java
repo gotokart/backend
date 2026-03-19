@@ -8,6 +8,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/orders")
+@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class OrderController {
     private final OrderService orderService;
