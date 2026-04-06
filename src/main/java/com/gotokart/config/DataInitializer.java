@@ -2,10 +2,13 @@ package com.gotokart.config;
 
 import com.gotokart.model.Category;
 import com.gotokart.model.Product;
+import com.gotokart.model.User;
 import com.gotokart.repository.CategoryRepository;
 import com.gotokart.repository.ProductRepository;
+import com.gotokart.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -14,12 +17,25 @@ import java.util.List;
 @RequiredArgsConstructor
 public class DataInitializer implements CommandLineRunner {
 
-    private final ProductRepository productRepository;
+    private final ProductRepository  productRepository;
     private final CategoryRepository categoryRepository;
+    private final UserRepository     userRepository;
+    private final PasswordEncoder    passwordEncoder;
 
     @Override
     public void run(String... args) {
-        if (productRepository.count() > 0) return; // already seeded
+        // Seed admin user if no users exist
+        if (userRepository.count() == 0) {
+            User admin = new User();
+            admin.setName("Admin");
+            admin.setEmail("admin@gotokart.com");
+            admin.setPassword(passwordEncoder.encode("admin123"));
+            admin.setRole("ADMIN");
+            userRepository.save(admin);
+            System.out.println("✅ Admin user created → admin@gotokart.com / admin123");
+        }
+
+        if (productRepository.count() > 0) return; // products already seeded
 
         Category electronics = save("Electronics");
         Category clothing    = save("Clothing");
