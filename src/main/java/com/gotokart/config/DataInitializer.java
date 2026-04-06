@@ -24,8 +24,8 @@ public class DataInitializer implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
-        // Seed admin user if no users exist
-        if (userRepository.count() == 0) {
+        // Always ensure admin user exists (safe to run on every startup)
+        if (userRepository.findByEmail("admin@gotokart.com").isEmpty()) {
             User admin = new User();
             admin.setName("Admin");
             admin.setEmail("admin@gotokart.com");
