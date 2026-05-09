@@ -13,6 +13,7 @@ import java.util.List;
 public class ProductService {
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
+    private final S3StorageService s3StorageService;
 
     public List<Product> getAllProducts() {
         return productRepository.findAll();
@@ -44,11 +45,25 @@ public class ProductService {
         Product product = productRepository.findById(id).orElseThrow();
 
         Category category = product.getCategory();
+        String oldKey = product.getImageKey();
 
         productRepository.delete(product);
 
         if (productRepository.countByCategory(category) == 0) {
             categoryRepository.delete(category);
         }
+
+        s3StorageService.deleteObject(oldKey);
+    }
+
+    public Product setImageKey(Long id, String imageKey) {
+        Product product = productRepository.findById(id).orElseThrow();
+        String oldKey = product.getImageKey();
+        product.setImageKey(imageKey);
+        Product saved = productRepository.save(product);
+        if (oldKey != null && !oldKey.equals(imageKey)) {
+            s3StorageService.deleteObject(oldKey);
+        }
+        return saved;
     }
 }
