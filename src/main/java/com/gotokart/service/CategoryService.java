@@ -32,7 +32,19 @@ public class CategoryService {
                 .orElseThrow(() -> new RuntimeException("Category not found"));
     }
 
-    // Delete category
+    // Update category name
+    public Category update(Long id, Category patch) {
+        Category existing = categoryRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Category not found"));
+        if (patch.getName() != null && !patch.getName().isBlank()) {
+            existing.setName(patch.getName().trim());
+        }
+        return categoryRepository.save(existing);
+    }
+
+    // Delete category. Caller is responsible for re-categorising any products
+    // that still reference this category — the FK is nullable so the rows are
+    // not lost, but they will become "uncategorised" until reassigned.
     public void delete(Long id) {
         categoryRepository.deleteById(id);
     }

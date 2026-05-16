@@ -72,4 +72,33 @@ public class OrderService {
     public List<Order> getOrders(Long userId) {
         return orderRepository.findByUserId(userId);
     }
+
+    public List<Order> getAllOrders() {
+        return orderRepository.findAllByOrderByCreatedAtDesc();
+    }
+
+    /**
+     * Whitelist of allowed status values. Anything outside this set is
+     * rejected with a 400-style RuntimeException so we don't end up with
+     * "Shippped" / "DELIVERD" typos in production.
+     */
+    private static final java.util.Set<String> VALID_STATUSES = java.util.Set.of(
+            "PLACED", "SHIPPED", "DELIVERED", "CANCELLED"
+    );
+
+    @Transactional
+    public Order updateStatus(Long orderId, String status) {
+        if (status == null) {
+            throw new RuntimeException("Status is required");
+        }
+        String normalised = status.trim().toUpperCase();
+        if (!VALID_STATUSES.contains(normalised)) {
+            throw new RuntimeException(
+                    "Invalid status. Allowed: " + VALID_STATUSES);
+        }
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new RuntimeException("Order not found"));
+        order.setStatus(normalised);
+        return orderRepository.save(order);
+    }
 }

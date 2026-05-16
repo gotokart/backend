@@ -5,6 +5,7 @@ import com.gotokart.model.User;
 import com.gotokart.service.UserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -19,12 +20,14 @@ public class UserController {
     private final JwtUtil     jwtUtil;
 
     @GetMapping
+    @PreAuthorize("hasRole('ADMIN')")
     public List<User> getAllUser() { return userService.getAllUsers(); }
 
     @PostMapping("/register")
     public User register(@RequestBody User user) { return userService.register(user); }
 
     @GetMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     public User getUser(@PathVariable Long id) { return userService.getUserById(id); }
 
     @GetMapping("/me")

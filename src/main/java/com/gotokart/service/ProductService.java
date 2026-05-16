@@ -35,9 +35,32 @@ public class ProductService {
                 .orElseGet(() -> productRepository.save(product));
     }
 
-    public Product updateProduct(Long id, Product product) {
-        product.setId(id);
-        return productRepository.save(product);
+    /**
+     * Partial update for the admin dashboard. Only fields that are present
+     * in the request payload overwrite the existing row; null fields are
+     * preserved. The image key is intentionally not handled here — it goes
+     * through the dedicated /image route after a presigned S3 upload.
+     */
+    public Product updateProduct(Long id, Product patch) {
+        Product existing = productRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Product not found"));
+        if (patch.getName() != null && !patch.getName().isBlank()) {
+            existing.setName(patch.getName().trim());
+        }
+        if (patch.getDescription() != null) {
+            existing.setDescription(patch.getDescription());
+        }
+        if (patch.getPrice() != null) {
+            existing.setPrice(patch.getPrice());
+        }
+        if (patch.getStock() != null) {
+            existing.setStock(patch.getStock());
+        }
+        if (patch.getCategory() != null && patch.getCategory().getId() != null) {
+            categoryRepository.findById(patch.getCategory().getId())
+                    .ifPresent(existing::setCategory);
+        }
+        return productRepository.save(existing);
     }
 
     public void deleteProduct(Long id) {
