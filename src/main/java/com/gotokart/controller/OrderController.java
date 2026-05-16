@@ -20,8 +20,12 @@ public class OrderController {
     private final OrderService orderService;
 
     @PostMapping("/{userId}/place")
-    public Order placeOrder(@PathVariable Long userId) {
-        return orderService.placeOrder(userId);
+    public Order placeOrder(
+            @PathVariable Long userId,
+            @RequestBody(required = false) Map<String, String> body) {
+        // Body is optional — older callers (no coupon code) just POST nothing.
+        String couponCode = body == null ? null : body.get("couponCode");
+        return orderService.placeOrder(userId, couponCode);
     }
 
     @GetMapping("/{userId}")

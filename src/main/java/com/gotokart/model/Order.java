@@ -23,7 +23,21 @@ public class Order {
     @JsonIgnoreProperties("order")
     private List<OrderItem> items;
 
+    /** Sum of (price × qty) across all items, before any discount is applied. */
+    private Double subtotal;
+
+    /** Rupee amount taken off by the redeemed coupon. Null/0 if no coupon. */
+    private Double discountAmount;
+
+    /** The coupon code that was redeemed at checkout. Null if none. Denormalised
+     *  so that even if the coupon is later edited or deleted, the historical
+     *  record on this order stays accurate. */
+    @Column(length = 32)
+    private String couponCode;
+
+    /** Final amount actually charged: subtotal − discountAmount. */
     private Double totalAmount;
+
     private String status;
     private LocalDateTime createdAt;
 }

@@ -16,9 +16,22 @@ public class OrderService {
     private final UserRepository userRepository;
     private final ProductRepository productRepository;
     private final OrderItemRepository orderItemRepository;
+    private final CouponRepository couponRepository;
 
+    /** Legacy overload — no coupon. Kept so older callers / scripts still work. */
     @Transactional
     public Order placeOrder(Long userId) {
+        return placeOrder(userId, null);
+    }
+
+    /**
+     * Atomically: reserves stock, snapshots each line item, optionally
+     * validates + applies a coupon (bumping its usedCount), and finally
+     * clears the cart. Everything runs inside one DB transaction so a
+     * mid-checkout failure leaves no half-state.
+     */
+    @Transactional
+    public Order placeOrder(Long userId, String couponCode) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
@@ -27,7 +40,6 @@ public class OrderService {
         if (cartItems == null || cartItems.isEmpty())
             throw new RuntimeException("Cart is empty");
 
-        // Save order shell first
         Order order = new Order();
         order.setUser(user);
         order.setStatus("PLACED");
@@ -35,19 +47,17 @@ public class OrderService {
         order.setTotalAmount(0.0);
         Order savedOrder = orderRepository.save(order);
 
-        double total = 0.0;
+        double subtotal = 0.0;
 
         for (CartItem cartItem : cartItems) {
             Product product = cartItem.getProduct();
 
-            // Reduce stock
             int newStock = product.getStock() - cartItem.getQuantity();
             if (newStock < 0)
                 throw new RuntimeException("Insufficient stock for: " + product.getName());
             product.setStock(newStock);
             productRepository.save(product);
 
-            // Save order item snapshot
             OrderItem orderItem = new OrderItem();
             orderItem.setOrder(savedOrder);
             orderItem.setProductName(product.getName());
@@ -56,14 +66,44 @@ public class OrderService {
             orderItem.setSubtotal(product.getPrice() * cartItem.getQuantity());
             orderItemRepository.save(orderItem);
 
-            total += orderItem.getSubtotal();
+            subtotal += orderItem.getSubtotal();
         }
 
-        // Update total amount
+        // ── Apply coupon (if any) ─────────────────────────────────────
+        double discount = 0.0;
+        String appliedCode = null;
+        if (couponCode != null && !couponCode.isBlank()) {
+            Coupon coupon = couponRepository.findByCodeIgnoreCase(couponCode.trim())
+                    .orElseThrow(() -> new RuntimeException("Invalid coupon code"));
+            // Re-validate at the moment of redemption (active / not expired /
+            // under usage limit). The cart's earlier validateForRedemption()
+            // call could have been many minutes ago.
+            if (!Boolean.TRUE.equals(coupon.getActive()))
+                throw new RuntimeException("Coupon is inactive");
+            if (coupon.getValidUntil() != null
+                    && coupon.getValidUntil().isBefore(LocalDateTime.now()))
+                throw new RuntimeException("Coupon has expired");
+            if (coupon.getUsageLimit() != null
+                    && coupon.getUsedCount() != null
+                    && coupon.getUsedCount() >= coupon.getUsageLimit())
+                throw new RuntimeException("Coupon usage limit reached");
+
+            int pct = coupon.getDiscountPercent() == null ? 0 : coupon.getDiscountPercent();
+            discount = Math.round(subtotal * pct) / 100.0;
+            appliedCode = coupon.getCode();
+
+            coupon.setUsedCount((coupon.getUsedCount() == null ? 0 : coupon.getUsedCount()) + 1);
+            couponRepository.save(coupon);
+        }
+
+        double total = Math.max(0.0, subtotal - discount);
+
+        savedOrder.setSubtotal(subtotal);
+        savedOrder.setDiscountAmount(discount);
+        savedOrder.setCouponCode(appliedCode);
         savedOrder.setTotalAmount(total);
         orderRepository.save(savedOrder);
 
-        // Clear cart
         cartItemRepository.deleteAllByUserId(userId);
 
         return savedOrder;
