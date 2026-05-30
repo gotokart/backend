@@ -29,8 +29,9 @@ import java.util.Set;
 @Service
 @RequiredArgsConstructor
 public class ProductService {
-    private static final String UNSPLASH_USER_AGENT =
-            "Mozilla/5.0 (compatible; GoToKart/1.0; +https://gotokart.xyz)";
+    private static final String BROWSER_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    + "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
@@ -73,24 +74,49 @@ public class ProductService {
     public boolean fetchAndStoreProductImage(Product product) {
         if (product.getName() == null || product.getName().isBlank()) return false;
 
-        String slug = product.getName().toLowerCase().replace(' ', '-');
+        String slug = slugify(product.getName());
         String key = "products/" + slug + ".jpg";
+        String displayUrl;
+        byte[] imageBytes;
+
         try {
-            String unsplashUrl = resolveUnsplashSearchUrl(product);
-            byte[] imageBytes = downloadImage(unsplashUrl);
+            displayUrl = resolveUnsplashSearchUrl(product);
+            imageBytes = downloadImage(displayUrl);
+        } catch (Exception unsplashError) {
+            log.warn("Unsplash failed for '{}': {} — using Picsum fallback",
+                    product.getName(), describeError(unsplashError));
+            displayUrl = picsumUrlFor(slug);
             try {
-                s3StorageService.uploadObject(key, imageBytes, "image/jpeg");
-                product.setImageKey(key);
-            } catch (Exception s3Error) {
-                log.warn("S3 upload failed for '{}' (Unsplash URL still used): {}",
-                        product.getName(), s3Error.getMessage());
+                imageBytes = downloadImage(displayUrl);
+            } catch (Exception picsumError) {
+                log.warn("Image fetch failed for '{}': unsplash={}, picsum={}",
+                        product.getName(), describeError(unsplashError), describeError(picsumError));
+                return false;
             }
-            product.setImageUrl(unsplashUrl);
-            return true;
-        } catch (Exception e) {
-            log.warn("Could not fetch Unsplash image for product '{}': {}", product.getName(), e.getMessage());
-            return false;
         }
+
+        try {
+            s3StorageService.uploadObject(key, imageBytes, "image/jpeg");
+            product.setImageKey(key);
+        } catch (Exception s3Error) {
+            log.warn("S3 upload failed for '{}' (display URL still used): {}",
+                    product.getName(), s3Error.getMessage());
+        }
+        product.setImageUrl(displayUrl);
+        return true;
+    }
+
+    private static String slugify(String name) {
+        return name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
+    }
+
+    private static String picsumUrlFor(String slug) {
+        return "https://picsum.photos/seed/gotokart-" + slug + "/400/400";
+    }
+
+    private static String describeError(Exception e) {
+        String msg = e.getMessage();
+        return e.getClass().getSimpleName() + (msg != null ? ": " + msg : "");
     }
 
     /** Attach Unsplash images to products missing one or stuck on private S3 URLs. */
@@ -172,7 +198,7 @@ public class ProductService {
     private String searchUnsplashQuery(String query) throws IOException, InterruptedException {
         String searchUrl = "https://unsplash.com/napi/search/photos?query="
                 + URLEncoder.encode(query, StandardCharsets.UTF_8) + "&per_page=10";
-        JsonNode root = objectMapper.readTree(downloadText(searchUrl));
+        JsonNode root = objectMapper.readTree(downloadText(searchUrl, true));
         JsonNode results = root.path("results");
         if (!results.isArray() || results.isEmpty()) {
             throw new IOException("No Unsplash image found for: " + query);
@@ -189,33 +215,44 @@ public class ProductService {
         throw new IOException("No suitable Unsplash URL for: " + query);
     }
 
-    private String downloadText(String url) throws IOException, InterruptedException {
-        HttpResponse<String> response = sendGet(url, HttpResponse.BodyHandlers.ofString());
+    private String downloadText(String url, boolean unsplashApi) throws IOException, InterruptedException {
+        HttpResponse<String> response = sendGet(url, HttpResponse.BodyHandlers.ofString(), unsplashApi);
         if (response.statusCode() >= 400) {
-            throw new IOException("HTTP " + response.statusCode());
+            throw new IOException("HTTP " + response.statusCode() + " for " + url);
         }
         return response.body();
+    }
+
+    private String downloadText(String url) throws IOException, InterruptedException {
+        return downloadText(url, false);
     }
 
     private byte[] downloadImage(String url) throws IOException, InterruptedException {
-        HttpResponse<byte[]> response = sendGet(url, HttpResponse.BodyHandlers.ofByteArray());
+        HttpResponse<byte[]> response = sendGet(url, HttpResponse.BodyHandlers.ofByteArray(), false);
         if (response.statusCode() >= 400) {
-            throw new IOException("HTTP " + response.statusCode());
+            throw new IOException("HTTP " + response.statusCode() + " for " + url);
         }
         return response.body();
     }
 
-    private <T> HttpResponse<T> sendGet(String url, HttpResponse.BodyHandler<T> handler)
+    private <T> HttpResponse<T> sendGet(String url, HttpResponse.BodyHandler<T> handler, boolean unsplashApi)
             throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
-                .header("Accept", "*/*")
-                .header("User-Agent", UNSPLASH_USER_AGENT)
                 .header("Accept-Language", "en-US,en;q=0.9")
+                .header("User-Agent", BROWSER_USER_AGENT)
                 .timeout(Duration.ofSeconds(30))
-                .GET()
-                .build();
-        return httpClient.send(request, handler);
+                .GET();
+
+        if (unsplashApi) {
+            builder.header("Accept", "application/json")
+                    .header("Referer", "https://unsplash.com/")
+                    .header("Origin", "https://unsplash.com");
+        } else {
+            builder.header("Accept", "*/*");
+        }
+
+        return httpClient.send(builder.build(), handler);
     }
 
     /**
