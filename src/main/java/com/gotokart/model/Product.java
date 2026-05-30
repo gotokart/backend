@@ -18,6 +18,9 @@ public class Product {
     @Column(name = "image_key")
     private String imageKey;
 
+    @Column(name = "image_url")
+    private String imageUrl;
+
     @ManyToOne
     @JoinColumn(name="category_id")
     private Category category;

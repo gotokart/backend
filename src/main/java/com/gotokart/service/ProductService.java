@@ -1,19 +1,32 @@
 package com.gotokart.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gotokart.model.Category;
 import com.gotokart.model.Product;
 import com.gotokart.repository.CategoryRepository;
 import com.gotokart.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ProductService {
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
     private final S3StorageService s3StorageService;
+    private final ObjectMapper objectMapper;
 
     public List<Product> getAllProducts() {
         return productRepository.findAll();
@@ -32,7 +45,81 @@ public class ProductService {
                     if (product.getDescription() != null) existing.setDescription(product.getDescription());
                     return productRepository.save(existing);
                 })
-                .orElseGet(() -> productRepository.save(product));
+                .orElseGet(() -> {
+                    fetchAndStoreProductImage(product);
+                    return productRepository.save(product);
+                });
+    }
+
+    private void fetchAndStoreProductImage(Product product) {
+        if (product.getName() == null || product.getName().isBlank()) return;
+
+        String slug = product.getName().toLowerCase().replace(' ', '-');
+        String key = "products/" + slug + ".jpg";
+        try {
+            String unsplashUrl = resolveUnsplashSearchUrl(product.getName());
+            byte[] imageBytes = downloadImage(unsplashUrl);
+            try {
+                s3StorageService.uploadObject(key, imageBytes, "image/jpeg");
+                product.setImageKey(key);
+                product.setImageUrl(s3StorageService.publicUrl(key));
+            } catch (Exception s3Error) {
+                log.warn("S3 upload failed for '{}', using Unsplash URL directly: {}",
+                        product.getName(), s3Error.getMessage());
+                product.setImageUrl(unsplashUrl);
+            }
+        } catch (Exception e) {
+            log.warn("Could not fetch Unsplash image for product '{}': {}", product.getName(), e.getMessage());
+        }
+    }
+
+    private String resolveUnsplashSearchUrl(String productName) throws IOException, InterruptedException {
+        String searchUrl = "https://unsplash.com/napi/search/photos?query="
+                + URLEncoder.encode(productName, StandardCharsets.UTF_8) + "&per_page=10";
+        JsonNode root = objectMapper.readTree(downloadText(searchUrl));
+        JsonNode results = root.path("results");
+        if (!results.isArray() || results.isEmpty()) {
+            throw new IOException("No Unsplash image found for: " + productName);
+        }
+        for (JsonNode result : results) {
+            JsonNode urls = result.path("urls");
+            for (String field : List.of("small", "regular", "thumb")) {
+                String url = urls.path(field).asText(null);
+                if (url != null && !url.isBlank()) {
+                    return url;
+                }
+            }
+        }
+        throw new IOException("No suitable Unsplash URL for: " + productName);
+    }
+
+    private String downloadText(String url) throws IOException, InterruptedException {
+        HttpResponse<String> response = sendGet(url, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() >= 400) {
+            throw new IOException("HTTP " + response.statusCode());
+        }
+        return response.body();
+    }
+
+    private byte[] downloadImage(String url) throws IOException, InterruptedException {
+        HttpResponse<byte[]> response = sendGet(url, HttpResponse.BodyHandlers.ofByteArray());
+        if (response.statusCode() >= 400) {
+            throw new IOException("HTTP " + response.statusCode());
+        }
+        return response.body();
+    }
+
+    private <T> HttpResponse<T> sendGet(String url, HttpResponse.BodyHandler<T> handler)
+            throws IOException, InterruptedException {
+        HttpClient client = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Accept", "*/*")
+                .GET()
+                .build();
+        return client.send(request, handler);
     }
 
     /**
@@ -83,6 +170,7 @@ public class ProductService {
         Product product = productRepository.findById(id).orElseThrow();
         String oldKey = product.getImageKey();
         product.setImageKey(imageKey);
+        product.setImageUrl(s3StorageService.publicUrl(imageKey));
         Product saved = productRepository.save(product);
         if (oldKey != null && !oldKey.equals(imageKey)) {
             s3StorageService.deleteObject(oldKey);
