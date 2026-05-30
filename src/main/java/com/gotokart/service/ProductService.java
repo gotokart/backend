@@ -12,6 +12,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import jakarta.annotation.PostConstruct;
+
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -49,6 +51,15 @@ public class ProductService {
             .followRedirects(HttpClient.Redirect.NORMAL)
             .connectTimeout(Duration.ofSeconds(15))
             .build();
+
+    @PostConstruct
+    void logUnsplashConfig() {
+        if (hasUnsplashAccessKey()) {
+            log.info("Unsplash official API enabled (access key length={})", unsplashAccessKey.trim().length());
+        } else {
+            log.warn("UNSPLASH_ACCESS_KEY not set — image fetch works locally via napi only, not on EC2");
+        }
+    }
 
     public List<Product> getAllProducts() {
         return productRepository.findAll();
@@ -160,7 +171,11 @@ public class ProductService {
     }
 
     private boolean hasUnsplashAccessKey() {
-        return unsplashAccessKey != null && !unsplashAccessKey.isBlank();
+        return unsplashAccessKey != null && !unsplashAccessKey.trim().isBlank();
+    }
+
+    private String unsplashClientId() {
+        return unsplashAccessKey.trim();
     }
 
     private String searchWithQueries(Product product, QuerySearcher searcher)
@@ -294,7 +309,7 @@ public class ProductService {
             case UNSPLASH_OFFICIAL -> builder
                     .header("Accept", "application/json")
                     .header("Accept-Version", "v1")
-                    .header("Authorization", "Client-ID " + unsplashAccessKey.trim());
+                    .header("Authorization", "Client-ID " + unsplashClientId());
             case UNSPLASH_NAPI -> builder
                     .header("Accept", "application/json")
                     .header("Referer", "https://unsplash.com/")
