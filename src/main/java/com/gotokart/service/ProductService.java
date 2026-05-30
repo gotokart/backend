@@ -83,42 +83,27 @@ public class ProductService {
 
         String slug = slugify(product.getName());
         String key = "products/" + slug + ".jpg";
-        String displayUrl;
-        byte[] imageBytes;
-
         try {
-            displayUrl = resolveUnsplashSearchUrl(product);
-            imageBytes = downloadImage(displayUrl);
-        } catch (Exception unsplashError) {
-            log.warn("Unsplash failed for '{}': {} — using Picsum fallback",
-                    product.getName(), describeError(unsplashError));
-            displayUrl = picsumUrlFor(slug);
+            String displayUrl = resolveUnsplashSearchUrl(product);
+            byte[] imageBytes = downloadImage(displayUrl);
             try {
-                imageBytes = downloadImage(displayUrl);
-            } catch (Exception picsumError) {
-                log.warn("Image fetch failed for '{}': unsplash={}, picsum={}",
-                        product.getName(), describeError(unsplashError), describeError(picsumError));
-                return false;
+                s3StorageService.uploadObject(key, imageBytes, "image/jpeg");
+                product.setImageKey(key);
+            } catch (Exception s3Error) {
+                log.warn("S3 upload failed for '{}' (Unsplash URL still used): {}",
+                        product.getName(), s3Error.getMessage());
             }
+            product.setImageUrl(displayUrl);
+            return true;
+        } catch (Exception e) {
+            log.warn("Could not fetch Unsplash image for product '{}': {}",
+                    product.getName(), describeError(e));
+            return false;
         }
-
-        try {
-            s3StorageService.uploadObject(key, imageBytes, "image/jpeg");
-            product.setImageKey(key);
-        } catch (Exception s3Error) {
-            log.warn("S3 upload failed for '{}' (display URL still used): {}",
-                    product.getName(), s3Error.getMessage());
-        }
-        product.setImageUrl(displayUrl);
-        return true;
     }
 
     private static String slugify(String name) {
         return name.toLowerCase().replaceAll("[^a-z0-9]+", "-").replaceAll("^-|-$", "");
-    }
-
-    private static String picsumUrlFor(String slug) {
-        return "https://picsum.photos/seed/gotokart-" + slug + "/400/400";
     }
 
     private static String describeError(Exception e) {
@@ -165,12 +150,13 @@ public class ProductService {
             } catch (IOException e) {
                 if (isUnsplashBlocked(e)) {
                     unsplashNapiBlocked = true;
-                    log.warn("Unsplash napi blocked from this host — using Picsum for remaining products");
+                    log.warn("Unsplash napi blocked from this host — set UNSPLASH_ACCESS_KEY in infra/.env");
                 }
                 throw e;
             }
         }
-        throw new IOException("Unsplash napi unavailable on this host");
+        throw new IOException(
+                "Unsplash requires UNSPLASH_ACCESS_KEY on EC2 (napi returns 401 from AWS IPs)");
     }
 
     private boolean hasUnsplashAccessKey() {
@@ -276,6 +262,7 @@ public class ProductService {
     private enum RequestKind { UNSPLASH_NAPI, UNSPLASH_OFFICIAL, GENERIC }
 
     private String downloadText(String url, RequestKind kind) throws IOException, InterruptedException {
+        HttpResponse<String> response = sendGet(url, HttpResponse.BodyHandlers.ofString(), kind);
         if (response.statusCode() >= 400) {
             throw new IOException("HTTP " + response.statusCode() + " for " + url);
         }
