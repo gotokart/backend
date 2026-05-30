@@ -1,5 +1,6 @@
 package com.gotokart.controller;
 
+import com.gotokart.dto.ImageBackfillResultDto;
 import com.gotokart.model.Product;
 import com.gotokart.service.ProductService;
 import com.gotokart.service.S3StorageService;
@@ -63,5 +64,13 @@ public class ProductController {
             @PathVariable Long id,
             @RequestBody Map<String, String> body) {
         return productService.setImageKey(id, body.get("imageKey"));
+    }
+
+    /** Download Unsplash photos for products missing images or on broken private S3 URLs. */
+    @PostMapping("/backfill-images")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ImageBackfillResultDto backfillImages(
+            @RequestParam(defaultValue = "false") boolean force) {
+        return productService.backfillMissingImages(force);
     }
 }

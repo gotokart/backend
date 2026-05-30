@@ -2,6 +2,7 @@ package com.gotokart.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gotokart.dto.ImageBackfillResultDto;
 import com.gotokart.model.Category;
 import com.gotokart.model.Product;
 import com.gotokart.repository.CategoryRepository;
@@ -17,16 +18,29 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ProductService {
+    private static final String UNSPLASH_USER_AGENT =
+            "Mozilla/5.0 (compatible; GoToKart/1.0; +https://gotokart.xyz)";
+
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
     private final S3StorageService s3StorageService;
     private final ObjectMapper objectMapper;
+
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .connectTimeout(Duration.ofSeconds(15))
+            .build();
 
     public List<Product> getAllProducts() {
         return productRepository.findAll();
@@ -51,35 +65,117 @@ public class ProductService {
                 });
     }
 
-    private void fetchAndStoreProductImage(Product product) {
-        if (product.getName() == null || product.getName().isBlank()) return;
+    /**
+     * Fetches a product photo from Unsplash, optionally stores a copy on S3,
+     * and always exposes the Unsplash CDN URL in {@code imageUrl} so browsers
+     * can load images without public S3 bucket access.
+     */
+    public boolean fetchAndStoreProductImage(Product product) {
+        if (product.getName() == null || product.getName().isBlank()) return false;
 
         String slug = product.getName().toLowerCase().replace(' ', '-');
         String key = "products/" + slug + ".jpg";
         try {
-            String unsplashUrl = resolveUnsplashSearchUrl(product.getName());
+            String unsplashUrl = resolveUnsplashSearchUrl(product);
             byte[] imageBytes = downloadImage(unsplashUrl);
             try {
                 s3StorageService.uploadObject(key, imageBytes, "image/jpeg");
                 product.setImageKey(key);
-                product.setImageUrl(s3StorageService.publicUrl(key));
             } catch (Exception s3Error) {
-                log.warn("S3 upload failed for '{}', using Unsplash URL directly: {}",
+                log.warn("S3 upload failed for '{}' (Unsplash URL still used): {}",
                         product.getName(), s3Error.getMessage());
-                product.setImageUrl(unsplashUrl);
             }
+            product.setImageUrl(unsplashUrl);
+            return true;
         } catch (Exception e) {
             log.warn("Could not fetch Unsplash image for product '{}': {}", product.getName(), e.getMessage());
+            return false;
         }
     }
 
-    private String resolveUnsplashSearchUrl(String productName) throws IOException, InterruptedException {
+    /** Attach Unsplash images to products missing one or stuck on private S3 URLs. */
+    public ImageBackfillResultDto backfillMissingImages(boolean force) {
+        List<Product> targets = force
+                ? productRepository.findAll()
+                : productRepository.findNeedingImageRefresh();
+        int updated = 0;
+        List<String> failedNames = new ArrayList<>();
+
+        for (Product product : targets) {
+            if (fetchAndStoreProductImage(product)) {
+                productRepository.save(product);
+                updated++;
+            } else {
+                failedNames.add(product.getName());
+            }
+            pauseBetweenUnsplashRequests();
+        }
+
+        return new ImageBackfillResultDto(targets.size(), updated, failedNames.size(), failedNames);
+    }
+
+    private void pauseBetweenUnsplashRequests() {
+        try {
+            Thread.sleep(350);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private String resolveUnsplashSearchUrl(Product product) throws IOException, InterruptedException {
+        IOException lastError = null;
+        for (String query : buildSearchQueries(product)) {
+            try {
+                return searchUnsplashQuery(query);
+            } catch (IOException e) {
+                lastError = e;
+            }
+        }
+        throw lastError != null
+                ? lastError
+                : new IOException("No Unsplash image found for: " + product.getName());
+    }
+
+    /** Try full name first, then shorter generic phrases and category-based terms. */
+    private List<String> buildSearchQueries(Product product) {
+        Set<String> queries = new LinkedHashSet<>();
+        String name = product.getName().trim();
+        queries.add(name);
+
+        String[] words = name.split("\\s+");
+        if (words.length >= 2) {
+            queries.add(words[words.length - 2] + " " + words[words.length - 1]);
+        }
+        if (words.length >= 3) {
+            queries.add(String.join(" ", Arrays.copyOfRange(words, 1, words.length)));
+        }
+        if (words.length >= 4) {
+            queries.add(String.join(" ", Arrays.copyOfRange(words, 2, words.length)));
+        }
+        if (words.length >= 1) {
+            queries.add(words[words.length - 1]);
+        }
+
+        if (product.getCategory() != null && product.getCategory().getName() != null) {
+            String category = product.getCategory().getName().trim();
+            if (!category.isBlank()) {
+                queries.add(category);
+                if (words.length >= 1) {
+                    queries.add(category + " " + words[words.length - 1]);
+                }
+            }
+        }
+
+        return List.copyOf(queries);
+    }
+
+    private String searchUnsplashQuery(String query) throws IOException, InterruptedException {
         String searchUrl = "https://unsplash.com/napi/search/photos?query="
-                + URLEncoder.encode(productName, StandardCharsets.UTF_8) + "&per_page=10";
+                + URLEncoder.encode(query, StandardCharsets.UTF_8) + "&per_page=10";
         JsonNode root = objectMapper.readTree(downloadText(searchUrl));
         JsonNode results = root.path("results");
         if (!results.isArray() || results.isEmpty()) {
-            throw new IOException("No Unsplash image found for: " + productName);
+            throw new IOException("No Unsplash image found for: " + query);
         }
         for (JsonNode result : results) {
             JsonNode urls = result.path("urls");
@@ -90,7 +186,7 @@ public class ProductService {
                 }
             }
         }
-        throw new IOException("No suitable Unsplash URL for: " + productName);
+        throw new IOException("No suitable Unsplash URL for: " + query);
     }
 
     private String downloadText(String url) throws IOException, InterruptedException {
@@ -111,15 +207,15 @@ public class ProductService {
 
     private <T> HttpResponse<T> sendGet(String url, HttpResponse.BodyHandler<T> handler)
             throws IOException, InterruptedException {
-        HttpClient client = HttpClient.newBuilder()
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Accept", "*/*")
+                .header("User-Agent", UNSPLASH_USER_AGENT)
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .timeout(Duration.ofSeconds(30))
                 .GET()
                 .build();
-        return client.send(request, handler);
+        return httpClient.send(request, handler);
     }
 
     /**
