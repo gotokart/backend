@@ -9,6 +9,7 @@ import com.gotokart.repository.CategoryRepository;
 import com.gotokart.repository.ProductRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -37,6 +38,12 @@ public class ProductService {
     private final CategoryRepository categoryRepository;
     private final S3StorageService s3StorageService;
     private final ObjectMapper objectMapper;
+
+    @Value("${unsplash.access-key:}")
+    private String unsplashAccessKey;
+
+    /** Set after the first 401 from unsplash.com/napi (blocked on AWS IPs). */
+    private volatile boolean unsplashNapiBlocked = false;
 
     private final HttpClient httpClient = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NORMAL)
@@ -149,17 +156,88 @@ public class ProductService {
     }
 
     private String resolveUnsplashSearchUrl(Product product) throws IOException, InterruptedException {
+        if (hasUnsplashAccessKey()) {
+            return searchWithQueries(product, this::searchUnsplashOfficialApi);
+        }
+        if (!unsplashNapiBlocked) {
+            try {
+                return searchWithQueries(product, this::searchUnsplashNapi);
+            } catch (IOException e) {
+                if (isUnsplashBlocked(e)) {
+                    unsplashNapiBlocked = true;
+                    log.warn("Unsplash napi blocked from this host — using Picsum for remaining products");
+                }
+                throw e;
+            }
+        }
+        throw new IOException("Unsplash napi unavailable on this host");
+    }
+
+    private boolean hasUnsplashAccessKey() {
+        return unsplashAccessKey != null && !unsplashAccessKey.isBlank();
+    }
+
+    private String searchWithQueries(Product product, QuerySearcher searcher)
+            throws IOException, InterruptedException {
         IOException lastError = null;
         for (String query : buildSearchQueries(product)) {
             try {
-                return searchUnsplashQuery(query);
+                return searcher.search(query);
             } catch (IOException e) {
                 lastError = e;
+                if (isUnsplashBlocked(e)) throw e;
             }
         }
         throw lastError != null
                 ? lastError
                 : new IOException("No Unsplash image found for: " + product.getName());
+    }
+
+    @FunctionalInterface
+    private interface QuerySearcher {
+        String search(String query) throws IOException, InterruptedException;
+    }
+
+    private boolean isUnsplashBlocked(IOException e) {
+        String msg = e.getMessage();
+        return msg != null && (msg.contains("HTTP 401") || msg.contains("HTTP 403"));
+    }
+
+    private String searchUnsplashOfficialApi(String query) throws IOException, InterruptedException {
+        String searchUrl = "https://api.unsplash.com/search/photos?query="
+                + URLEncoder.encode(query, StandardCharsets.UTF_8) + "&per_page=10";
+        HttpResponse<String> response = sendGet(
+                searchUrl,
+                HttpResponse.BodyHandlers.ofString(),
+                RequestKind.UNSPLASH_OFFICIAL);
+        if (response.statusCode() >= 400) {
+            throw new IOException("HTTP " + response.statusCode() + " for " + searchUrl);
+        }
+        return extractImageUrl(objectMapper.readTree(response.body()), query);
+    }
+
+    private String searchUnsplashNapi(String query) throws IOException, InterruptedException {
+        String searchUrl = "https://unsplash.com/napi/search/photos?query="
+                + URLEncoder.encode(query, StandardCharsets.UTF_8) + "&per_page=10";
+        JsonNode root = objectMapper.readTree(downloadText(searchUrl, RequestKind.UNSPLASH_NAPI));
+        return extractImageUrl(root, query);
+    }
+
+    private String extractImageUrl(JsonNode root, String query) throws IOException {
+        JsonNode results = root.path("results");
+        if (!results.isArray() || results.isEmpty()) {
+            throw new IOException("No Unsplash image found for: " + query);
+        }
+        for (JsonNode result : results) {
+            JsonNode urls = result.path("urls");
+            for (String field : List.of("small", "regular", "thumb")) {
+                String url = urls.path(field).asText(null);
+                if (url != null && !url.isBlank()) {
+                    return url;
+                }
+            }
+        }
+        throw new IOException("No suitable Unsplash URL for: " + query);
     }
 
     /** Try full name first, then shorter generic phrases and category-based terms. */
@@ -195,28 +273,9 @@ public class ProductService {
         return List.copyOf(queries);
     }
 
-    private String searchUnsplashQuery(String query) throws IOException, InterruptedException {
-        String searchUrl = "https://unsplash.com/napi/search/photos?query="
-                + URLEncoder.encode(query, StandardCharsets.UTF_8) + "&per_page=10";
-        JsonNode root = objectMapper.readTree(downloadText(searchUrl, true));
-        JsonNode results = root.path("results");
-        if (!results.isArray() || results.isEmpty()) {
-            throw new IOException("No Unsplash image found for: " + query);
-        }
-        for (JsonNode result : results) {
-            JsonNode urls = result.path("urls");
-            for (String field : List.of("small", "regular", "thumb")) {
-                String url = urls.path(field).asText(null);
-                if (url != null && !url.isBlank()) {
-                    return url;
-                }
-            }
-        }
-        throw new IOException("No suitable Unsplash URL for: " + query);
-    }
+    private enum RequestKind { UNSPLASH_NAPI, UNSPLASH_OFFICIAL, GENERIC }
 
-    private String downloadText(String url, boolean unsplashApi) throws IOException, InterruptedException {
-        HttpResponse<String> response = sendGet(url, HttpResponse.BodyHandlers.ofString(), unsplashApi);
+    private String downloadText(String url, RequestKind kind) throws IOException, InterruptedException {
         if (response.statusCode() >= 400) {
             throw new IOException("HTTP " + response.statusCode() + " for " + url);
         }
@@ -224,18 +283,18 @@ public class ProductService {
     }
 
     private String downloadText(String url) throws IOException, InterruptedException {
-        return downloadText(url, false);
+        return downloadText(url, RequestKind.GENERIC);
     }
 
     private byte[] downloadImage(String url) throws IOException, InterruptedException {
-        HttpResponse<byte[]> response = sendGet(url, HttpResponse.BodyHandlers.ofByteArray(), false);
+        HttpResponse<byte[]> response = sendGet(url, HttpResponse.BodyHandlers.ofByteArray(), RequestKind.GENERIC);
         if (response.statusCode() >= 400) {
             throw new IOException("HTTP " + response.statusCode() + " for " + url);
         }
         return response.body();
     }
 
-    private <T> HttpResponse<T> sendGet(String url, HttpResponse.BodyHandler<T> handler, boolean unsplashApi)
+    private <T> HttpResponse<T> sendGet(String url, HttpResponse.BodyHandler<T> handler, RequestKind kind)
             throws IOException, InterruptedException {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -244,12 +303,16 @@ public class ProductService {
                 .timeout(Duration.ofSeconds(30))
                 .GET();
 
-        if (unsplashApi) {
-            builder.header("Accept", "application/json")
+        switch (kind) {
+            case UNSPLASH_OFFICIAL -> builder
+                    .header("Accept", "application/json")
+                    .header("Accept-Version", "v1")
+                    .header("Authorization", "Client-ID " + unsplashAccessKey.trim());
+            case UNSPLASH_NAPI -> builder
+                    .header("Accept", "application/json")
                     .header("Referer", "https://unsplash.com/")
                     .header("Origin", "https://unsplash.com");
-        } else {
-            builder.header("Accept", "*/*");
+            default -> builder.header("Accept", "*/*");
         }
 
         return httpClient.send(builder.build(), handler);
