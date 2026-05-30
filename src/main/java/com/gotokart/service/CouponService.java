@@ -4,6 +4,7 @@ import com.gotokart.model.Coupon;
 import com.gotokart.repository.CouponRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -15,7 +16,29 @@ public class CouponService {
     private final CouponRepository couponRepository;
 
     public List<Coupon> getAll() {
+        deactivateExpiredCoupons();
         return couponRepository.findAllByOrderByCreatedAtDesc();
+    }
+
+    /** Active, non-expired coupons for the storefront cart dropdown. */
+    public List<Coupon> getActiveForStorefront() {
+        deactivateExpiredCoupons();
+        return couponRepository.findByActiveTrueOrderByCodeAsc().stream()
+                .filter(c -> c.getValidUntil() == null
+                        || c.getValidUntil().isAfter(LocalDateTime.now()))
+                .filter(c -> c.getUsageLimit() == null
+                        || c.getUsedCount() == null
+                        || c.getUsedCount() < c.getUsageLimit())
+                .toList();
+    }
+
+    @Transactional
+    public void deactivateExpiredCoupons() {
+        List<Coupon> expired = couponRepository
+                .findByActiveTrueAndValidUntilIsNotNullAndValidUntilBefore(LocalDateTime.now());
+        if (expired.isEmpty()) return;
+        expired.forEach(c -> c.setActive(false));
+        couponRepository.saveAll(expired);
     }
 
     public Coupon getById(Long id) {
@@ -66,6 +89,7 @@ public class CouponService {
      * is the canonical row; the caller can read discountPercent off it.
      */
     public Coupon validateForRedemption(String code) {
+        deactivateExpiredCoupons();
         if (code == null || code.isBlank()) {
             throw new RuntimeException("Coupon code is required");
         }
@@ -75,12 +99,16 @@ public class CouponService {
             throw new RuntimeException("Coupon is inactive");
         }
         if (coupon.getValidUntil() != null
-                && coupon.getValidUntil().isBefore(LocalDateTime.now())) {
+                && !coupon.getValidUntil().isAfter(LocalDateTime.now())) {
+            coupon.setActive(false);
+            couponRepository.save(coupon);
             throw new RuntimeException("Coupon has expired");
         }
         if (coupon.getUsageLimit() != null
                 && coupon.getUsedCount() != null
                 && coupon.getUsedCount() >= coupon.getUsageLimit()) {
+            coupon.setActive(false);
+            couponRepository.save(coupon);
             throw new RuntimeException("Coupon usage limit reached");
         }
         return coupon;

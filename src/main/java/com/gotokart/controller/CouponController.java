@@ -3,10 +3,12 @@ package com.gotokart.controller;
 import com.gotokart.model.Coupon;
 import com.gotokart.service.CouponService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/coupons")
@@ -44,9 +46,19 @@ public class CouponController {
         couponService.delete(id);
     }
 
+    /** Public — active coupons for the cart dropdown. */
+    @GetMapping("/active")
+    public List<Coupon> getActive() {
+        return couponService.getActiveForStorefront();
+    }
+
     /** Public — used by the storefront's cart to check a coupon before checkout. */
     @GetMapping("/validate")
-    public Coupon validate(@RequestParam String code) {
-        return couponService.validateForRedemption(code);
+    public ResponseEntity<?> validate(@RequestParam String code) {
+        try {
+            return ResponseEntity.ok(couponService.validateForRedemption(code));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
     }
 }
